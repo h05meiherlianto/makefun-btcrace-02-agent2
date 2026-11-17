@@ -13,7 +13,11 @@
 //     forced flattening.
 //   - Exit, the whole position: the close rises 200 bps above the entry
 //     (take the profit), or falls 200 bps under the highest close since entry
-//     (trailing stop: the worst case is a ~2.4% loss, fees included).
+//     (trailing stop: the worst case is a ~2.4% loss, fees included), or
+//     falls 250 bps under the entry itself (hard stop: caps the loss even on
+//     a sharp gap down where the trailing stop would lag), or is still open
+//     at bar 1,380 (time exit: close under the bot's own slippage cap
+//     instead of being flattened by the harness at the window's end).
 //   - After an exit the bot is done: it never re-enters, so a choppy window
 //     cannot bleed it through repeated whipsaws.
 //
@@ -37,8 +41,19 @@ const FALLBACK_BAR = 720;
 const TAKE_BPS = 200;
 /** Exit: trailing stop this far under the highest close since entry, in bps. */
 const STOP_BPS = 200;
+/** Exit: hard stop this far under the entry close, in bps. The trailing stop
+ *  bounds the loss to ~200 bps under the peak, but on a sharp gap down the
+ *  close can print far below the peak before the trailing stop is even
+ *  evaluated; the hard stop caps the worst case at ~2.5% + fees no matter
+ *  how the fall happens. */
+const HARD_STOP_BPS = 250;
 /** No new entry once this many scored bars have passed (the window is 1,440). */
 const NO_ENTRY_AFTER = 1320;
+/** Exit: if still holding at this scored bar, close the position. The
+ *  window flattens everything at bar 1,440, and a position held into the
+ *  final hour can be flattened at a bad print; exiting at 1,380 keeps the
+ *  exit under the bot's own slippage cap instead of the harness's. */
+const TIME_EXIT_BAR = 1380;
 /** Slippage cap on every order, in bps past the close it was decided on. */
 const MAX_SLIPPAGE_BPS = 100;
 
@@ -68,7 +83,9 @@ await runBars({
       if (close > runHigh) runHigh = close;
       const takeProfit = close >= entryClose * (1 + TAKE_BPS / 10000);
       const underStop = runHigh > 0 && close <= runHigh * (1 - STOP_BPS / 10000);
-      if (takeProfit || underStop) {
+      const hardStop = close <= entryClose * (1 - HARD_STOP_BPS / 10000);
+      const timeExit = seq >= TIME_EXIT_BAR;
+      if (takeProfit || underStop || hardStop || timeExit) {
         entryClose = 0;
         runHigh = 0;
         const sell: SellInput = { side: 'sell', symbol: SYMBOL, qty: held.qty, max_slippage_bps: MAX_SLIPPAGE_BPS };
